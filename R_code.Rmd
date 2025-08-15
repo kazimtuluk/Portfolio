@@ -1,0 +1,410 @@
+```{r}
+# Load required packages
+library(tidyverse)   # For data manipulation & plotting
+library(janitor)     # For cleaning variable names
+library(psych)       # For descriptive statistics
+library(ggplot2)     # For visualization
+library(dplyr)
+library(purrr)
+library(stringr)
+library(lubridate)
+library(tidyr)
+library (readxl)   # Read Excel files
+library (reshape2) # melt to convert WIDE to LONG format
+library (ez)       # ezANOVA for RM ANOVA w Mauchly
+library (car)      # Levene Test for homogeneity of variance
+library (afex)     # aov_ez
+library (RVAideMemoire)  # byf.hist, byf.shapiro
+```
+
+```{r}
+# Load dataset
+data <- read_csv("C:/Users/kazim/OneDrive/Documents/Portfolio_1/data/powerconsumption.csv") %>%
+  clean_names()  # Makes column names lowercase and underscores
+```
+
+```{r}
+#  Preview dataset
+head(data)
+glimpse(data)
+```
+
+
+```{r}
+# Check for missing values
+colSums(is.na(data))
+# Remove duplicates if any
+data <- data %>% distinct()
+```
+
+```{r}
+
+# Convert datetime column to proper POSIXct format
+data$datetime <- as.POSIXct(data$datetime, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+# Create Season variable
+data <- data %>%
+  mutate(
+    month = month(datetime),
+    season = case_when(
+      month %in% c(12, 1, 2)  ~ "Winter",
+      month %in% c(3, 4, 5)   ~ "Spring",
+      month %in% c(6, 7, 8)   ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Fall"
+    )
+  )
+
+# Create Time of Day variable
+data <- data %>%
+  mutate(
+    hour = hour(datetime),
+    time_of_day = case_when(
+      hour >= 6  & hour < 12 ~ "Morning",
+      hour >= 12 & hour < 18 ~ "Afternoon",
+      hour >= 18 & hour < 24 ~ "Evening",
+      TRUE                   ~ "Night"
+    )
+  )
+
+# Create Day Type variable (Weekday/Weekend)
+data <- data %>%
+  mutate(
+    day_of_week = wday(datetime, label = TRUE),
+    day_type = ifelse(day_of_week %in% c("Sat", "Sun"), "Weekend", "Weekday")
+  )
+
+# Convert new variables to factors
+data$season <- factor(data$season, levels = c("Winter", "Spring", "Summer", "Fall"))
+data$time_of_day <- factor(data$time_of_day, levels = c("Morning", "Afternoon", "Evening", "Night"))
+data$day_type <- factor(data$day_type, levels = c("Weekday", "Weekend"))
+
+
+# Preview result
+head(data)
+```
+
+# --- Summary Statistics ---
+
+
+```{r}
+# Mean power consumption by Season
+season_summary <- data %>%
+  group_by(season) %>%
+  summarise(across(starts_with("power_consumption"),
+                   list(mean = ~ mean(. , na.rm = TRUE),
+                        sd = ~ sd(. , na.rm = TRUE))))
+
+print(season_summary)
+```
+```{r}
+# Mean power consumption by Time of Day
+tod_summary <- data %>%
+  group_by(time_of_day) %>%
+  summarise(across(starts_with("power_consumption"),
+                   list(mean = ~ mean(. , na.rm = TRUE),
+                        sd = ~ sd(. , na.rm = TRUE))))
+
+print(tod_summary)
+```
+```{r}
+# Mean power consumption by Day Type
+daytype_summary <- data %>%
+  group_by(day_type) %>%
+  summarise(across(starts_with("power_consumption"),
+                   list(mean = ~ mean(. , na.rm = TRUE),
+                        sd = ~ sd(. , na.rm = TRUE))))
+
+print(daytype_summary)
+```
+```{r}
+hist(data$temperature)
+hist(data$humidity)
+hist(data$wind_speed)
+hist(data$general_diffuse_flows)
+```
+ # wind and general diffuse flow does not seem to meet normality, it is needed to be tested
+
+
+
+# --- Visualizations ---
+
+```{r}
+# Boxplot: Power consumption by season (Zone 1 example)
+ggplot(data, aes(x = season, y = power_consumption_zone1, fill = season)) +
+  geom_boxplot() +
+  labs(title = "Power Consumption (Zone 1) by Season",
+       y = "Power Consumption",
+       x = "Season") +
+  theme_minimal()
+
+# Boxplot: Power consumption by time of day (Zone 1 example)
+ggplot(data, aes(x = time_of_day, y = power_consumption_zone1, fill = time_of_day)) +
+  geom_boxplot() +
+  labs(title = "Power Consumption (Zone 1) by Time of Day",
+       y = "Power Consumption",
+       x = "Time of Day") +
+  theme_minimal()
+
+# Boxplot: Power consumption by day type (Zone 1 example)
+ggplot(data, aes(x = day_type, y = power_consumption_zone1, fill = day_type)) +
+  geom_boxplot() +
+  labs(title = "Power Consumption (Zone 1) by Day Type",
+       y = "Power Consumption",
+       x = "Day Type") +
+  theme_minimal()
+
+
+# Histogram of power consumption for Zone 3
+ggplot(data, aes(x = power_consumption_zone3)) +
+  geom_histogram(binwidth = 1000, fill = "steelblue", color = "black") +
+  labs(title = "Histogram of Power Consumption(Zone 3)",
+       x = "Power Consumption",
+       y = "Frequency") +
+  theme_minimal()
+
+
+```
+```{r}
+# Aggregate average consumption by hour for each zone
+area_data <- data %>%
+  mutate(hour = hour(datetime)) %>%
+  group_by(hour) %>%
+  summarise(
+    Zone1 = mean(power_consumption_zone1, na.rm = TRUE),
+    Zone2 = mean(power_consumption_zone2, na.rm = TRUE),
+    Zone3 = mean(power_consumption_zone3, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_longer(cols = starts_with("Zone"), names_to = "Zone", values_to = "avg_consumption")
+
+# Plot area chart
+ggplot(area_data, aes(x = hour, y = avg_consumption, fill = Zone, color = Zone)) +
+  geom_area(alpha = 0.3, position = "identity") +
+  geom_line(size = 1) +
+  scale_fill_manual(values = c("Zone1" = "#1b9e77", "Zone2" = "#d95f02", "Zone3" = "#7570b3")) +
+  scale_color_manual(values = c("Zone1" = "#1b9e77", "Zone2" = "#d95f02", "Zone3" = "#7570b3")) +
+  labs(title = "Average Hourly Power Consumption by Zone",
+       x = "Hour of Day",
+       y = "Average Consumption",
+       fill = "Zone",
+       color = "Zone") +
+  theme_minimal()
+
+```
+Question 1: IS temperature correlated with electricity consumption?
+
+```{r}
+# Pearson correlation test
+cor_test1 <- cor.test(data$temperature, data$power_consumption_zone1, method = "pearson")
+print(cor_test1)
+cor_test2 <- cor.test(data$temperature, data$power_consumption_zone2, method = "pearson")
+print(cor_test2)
+cor_test3 <- cor.test(data$temperature, data$power_consumption_zone3, method = "pearson")
+print(cor_test3)
+
+# Scatter plot with trend line
+ggplot(data, aes(x = temperature, y = power_consumption_zone3)) +
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(title = "Temperature vs Electricity Consumption",
+       x = "Temperature (°C)",
+       y = "Electricity Consumption (kWh)")
+```
+
+
+
+
+Q2: Do different zones have different electric consumption in different seasons?
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ez)
+
+# Prepare data
+anova_data <- data %>%
+  select(season,
+         power_consumption_zone1,
+         power_consumption_zone2,
+         power_consumption_zone3) %>%
+  pivot_longer(cols = starts_with("power_consumption_zone"),
+               names_to = "Zone", values_to = "Consumption") %>%
+  mutate(
+    Zone = factor(Zone,
+                  levels = c("power_consumption_zone1", "power_consumption_zone2", "power_consumption_zone3"),
+                  labels = c("Zone 1", "Zone 2", "Zone 3")),
+    season = factor(season)
+  )
+
+# Create subject ID (unique for each datetime row)
+anova_data$ID <- rep(1:(nrow(data)), each = 3)
+
+```
+
+
+
+```{r}
+#Check assumptions
+
+# (i) Outliers by cell (Zone × season)
+boxplot(Consumption ~ season * Zone, data = anova_data)
+
+# Function to calculate outlier percentage
+outlier_percentage <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower <- q1 - 1.5 * iqr
+  upper <- q3 + 1.5 * iqr
+  sum(x < lower | x > upper, na.rm = TRUE) / length(x) * 100
+}
+
+# Percentage of outliers by Season
+outliers_by_season <- anova_data %>%
+  group_by(season) %>%
+  summarise(Outlier_Percent = outlier_percentage(Consumption))
+
+# Percentage of outliers by Zone
+outliers_by_zone <- anova_data %>%
+  group_by(Zone) %>%
+  summarise(Outlier_Percent = outlier_percentage(Consumption))
+
+outliers_by_season
+outliers_by_zone
+```
+
+```{r}
+byf.hist(Consumption ~ season * Zone, data = anova_data)
+
+
+ggplot(anova_data, aes(sample = Consumption)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  facet_grid(season ~ Zone)
+```
+
+
+```{r}
+# (iii) Homogeneity of variance for the BETWEEN factor (season)
+# Use subject means across the within factor to respect independence
+between_df <- anova_data %>%
+  group_by(ID, season) %>%
+  summarise(MeanConsumption = mean(Consumption, na.rm = TRUE), .groups = "drop")
+
+leveneTest(MeanConsumption ~ as.factor(season), data = between_df)
+```
+
+```{r}
+anova1 <- ezANOVA(
+  data     = anova_data,
+  dv       = .(Consumption),
+  wid      = .(ID),
+  within   = .(Zone),
+  between  = .(season),
+  type     = 3,
+  detailed = TRUE
+)
+
+print(anova1)
+```
+
+
+```{r}
+# Interaction plot
+interaction.plot(
+  x.factor = anova_data$season,
+  trace.factor = anova_data$Zone,
+  response = anova_data$Consumption,
+  type = "b",
+  legend = TRUE,
+  xlab = "Season",
+  ylab = "Consumption",
+  main = "Interaction Plot: Season × Zone"
+)
+```
+
+
+```{r}
+# Split the data by season
+df_winter <- subset(anova_data, season == "Winter")
+df_spring <- subset(anova_data, season == "Spring")
+df_summer <- subset(anova_data, season == "Summer")
+df_fall   <- subset(anova_data, season == "Fall")
+```
+
+```{r}
+# Pairwise t-tests (Bonferroni adjusted) for Zones within each Season
+pairwise.t.test(df_winter$Consumption, as.factor(df_winter$Zone),
+                paired = TRUE, p.adjust.method = "bonferroni")
+
+pairwise.t.test(df_spring$Consumption, as.factor(df_spring$Zone),
+                paired = TRUE, p.adjust.method = "bonferroni")
+
+pairwise.t.test(df_summer$Consumption, as.factor(df_summer$Zone),
+                paired = TRUE, p.adjust.method = "bonferroni")
+
+pairwise.t.test(df_fall$Consumption, as.factor(df_fall$Zone),
+                paired = TRUE, p.adjust.method = "bonferroni")
+```
+
+```{r}
+# descriptives for each combination of a time and diary type
+describeBy(anova_data$Consumption, list(anova_data$season, anova_data$Zone)) 
+```
+
+A 2-way mixed ANOVA with a Huynh–Feldt correction showed a significant interaction between season and zone on power consumption, F(5.84, 7152.62) = 7344.33, p < .001.
+
+Pairwise comparisons with the Bonferroni correction indicated that within each season, the mean consumption differed significantly between all zones (p < .001). For example, in Winter, Zone 1 had the highest mean consumption (M = 30,340.83 kWh, SD = 6,903.11) compared to Zone 2 (M = 20,648.78, SD = 5,377.93) and Zone 3 (M = 15,357.90, SD = 5,005.77).
+Similarly, in Summer, Zone 1 consumption (M = 35,635.17, SD = 7,157.89) was much higher than Zone 2 (M = 23,185.38, SD = 5,182.44) and Zone 3 (M = 24,468.08, SD = 7,119.21).
+Across all seasons, Zone 3 generally showed the lowest mean consumption, with the exception of Summer, where Zone 3(M = 24468.06, SD = 7119.2) was slightly higher than Zone 2(M = 23185.38, SD = 5182).
+
+These results indicate a strong seasonal pattern of electricity consumption that differs across zones, with Zone 1 consistently using the most power and Zone 3 the least.
+
+
+#Does adding both solar radiations significantly improve the prediction of power consumption compared to using only temperature, humidity, and wind speed?
+
+```{r}
+library(PerformanceAnalytics)
+
+for_regression <-data %>% 
+  select(temperature, humidity, wind_speed, power_consumption_zone1)
+chart.Correlation(for_regression, histogram = TRUE)
+```
+
+
+```{r}
+model1 <- lm(power_consumption_zone1 ~ temperature + wind_speed + humidity, data = data)
+summary(model1)
+```
+```{r}
+model2 <- lm(power_consumption_zone1 ~ temperature + wind_speed + humidity + diffuse_flows + general_diffuse_flows, data = data)
+summary(model2)
+```
+```{r}
+#Assumptions
+hist(residuals(model1)) # normality was met
+durbinWatsonTest(model1)
+vif(model1)
+```
+
+
+
+```{r}
+model3 <- lm(power_consumption_zone1 ~ temperature + wind_speed + humidity + general_diffuse_flows, data = data)
+summary(model3)
+```
+```{r}
+anova(model1, model3)
+```
+# APA Report
+A multiple linear regression analysis was conducted to determine whether the power consumption in Zone 1 could be predicted from temperature, wind speed, and humidity, and whether adding general diffuse flows would improve the model.
+In the first model, temperature, wind speed, and humidity significantly predicted power consumption, 𝑝<.001
+
+In the second model, general diffuse flows was added as a predictor. The model with general diffuse flows also significantly predicted power consumption, 𝑝<.001 and the coefficient for general diffuse flows was statistically significant, 𝑝< .001.
+
+An ANOVA comparing the two models indicated that adding general diffuse flows significantly improved the model fit, 
+𝐹(1,52410)=189.69,𝑝<.001. Although the increase in𝑅2 from .2044 to .2073 was small, the improvement was statistically significant, suggesting that general diffuse flows is a relevant predictor for power consumption in Zone 1.
+
+
+
+
